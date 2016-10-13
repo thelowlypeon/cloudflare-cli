@@ -12,98 +12,235 @@ function exit_with_error_and_usage {
         echo ""
     fi
     echo "  Usage:"
-    echo "    cloudflare-cli [-s sitename] [-z zoneid] [-e cloudflare@email.com] [-k cloudflare_api_key]"
+    echo "    cloudflare-cli command [-s sitename] [-z zoneid] [-e cloudflare@email.com] [-k cloudflare_api_key]"
+    echo ""
+    echo "  Commands:"
+    echo "    help      Show options"
+    echo "    validate  Read and validate config (from Cloudfile, CNAME, or options)"
+    echo "    config    Reads and validates your working directory's Cloudfile"
+    echo "    zone      Retrieves the Cloudflare zone associated with your site"
+    echo "    purge     Purges all files in your Cloudflare cache"
     echo ""
     echo "  Options:"
-    echo "    -z     The Cloudflare zone. This is required if no site is found or defined."
-    echo "    -s     Site name, eg mysite.com."
-    echo "           This is not required if a zone is defined."
-    echo "           Alternately, add a file called CNAME to your working directory with only the site name."
-    echo "    -e     The email address associated with your Cloudflare account."
-    echo "           You can optionally declare this as the environment variable CLOUDFLARE_EMAIL."
-    echo "    -k     Your Cloudflare API key."
-    echo "           You can optionally declare this as the environment variable CLOUDFLARE_API_KEY."
+    echo "    -h       Help"
+    echo "    -z       The Cloudflare zone. This is required if no site is found or defined."
+    echo "    -s       Site name, eg mysite.com."
+    echo "             This is not required if a zone is defined."
+    echo "             Alternately, add a file called CNAME to your working directory with only the site name."
+    echo "    -e       The email address associated with your Cloudflare account."
+    echo "             You can optionally declare this as the environment variable CLOUDFLARE_EMAIL."
+    echo "    -k       Your Cloudflare API key."
+    echo "             You can optionally declare this as the environment variable CLOUDFLARE_API_KEY."
     echo ""
-    echo "  Example usage:"
-    echo "    cloudflare-cli -s mysite.com -e myemail@email.com -k apikey"
+    echo "  Configuration:"
+    echo "    Cloudfile:"
+    echo "       Save your email, API key, and zone/site in a file called Cloudfile in your working directory."
+    echo "       For example, your cloudfile may look like this:"
+    echo "           CLOUDFLARE_API_KEY=123abc"
+    echo "           CLOUDFLARE_EMAIL=my.cloudflare.email@email.com"
+    echo "           CLOUDFLARE_SITE=mysite.come"
+    echo "    Options:"
+    echo "       If you'd rather not save these values locally, you can pass in all parameters using the options above."
+    echo "    CNAME:"
+    echo "       You'll still need to set the API key and email somehow, but you can avoid worrying about the cloudflare zone"
+    echo "       by saving your site name in a file called CNAME in your working directory."
+    echo "       This is particularly useful for sites hosted on Github pages, which use a CNAME file for custom domains."
+    echo ""
+    echo "    Note: setting any values more than once will default as follows:"
+    echo "          1. If any options are passed, this value is used first"
+    echo "          2. If a CNAME file exists, that value is used for the site unless passed as an option"
+    echo "          3. If a Cloudfile exists, the API key, email, zone, and site are set if not set in 1 or 2."
     echo ""
     exit
 }
 
-# variables
-email=$CLOUDFLARE_EMAIL
-key=$CLOUDFLARE_API_KEY
+# SET ALL VARIABLES
+#
+# Required variables for all requests:
+#    CLOUDFLARE_API_KEY
+#    CLOUDFLARE_EMAIL
+#
+# Additional required variables for fetching a zone:
+#    CLOUDFLARE_SITE
+#
+# Additional required variables for purging caches:
+#    CLOUDFLARE_ZONE
 
-for ((i=1;i<=$#;i++)); 
-do
-    if [ ${!i} = "-s" ] 
-    then ((i++)) 
-        site=${!i};
-    elif [ ${!i} = "-e" ];
-    then ((i++)) 
-        email=${!i};
-    elif [ ${!i} = "-z" ];
-    then ((i++)) 
-        zone=${!i};
-    elif [ ${!i} = "-k" ];
-    then ((i++)) 
-        key=${!i};
-    elif [ ${!i} = "-h" ]; then
-        exit_with_error_and_usage ""
+
+# **** methods for reading or setting variables ****
+
+# Variables can be set using a Cloudfile in the working directory.
+# Example:
+#    CLOUDFLARE_API_KEY=value
+#    CLOUDFLARE_EMAIL=value
+#    CLOUDFLARE_ZONE=value
+#    CLOUDFLARE_SITE=value
+function read_cloudfile {
+    if [ -f Cloudfile ]; then
+        eval $(cat Cloudfile)
     else
-        exit_with_error_and_usage "Invalid option ${!i}"
+        exit_with_error_and_usage "No Cloudfile found"
     fi
-done;
+}
 
-if [ -z $email ]; then
-    exit_with_error_and_usage "Invalid email."
-fi
-
-if [ -z $key ]; then
-    exit_with_error_and_usage "Invalid Cloudflare API key."
-fi
-
-echo -n "Purging "
-
-if [ -z $zone ]; then
-    if [ -z $site ] && [ -f CNAME ]; then
-        site=$(cat CNAME)
-    fi
-
-    if [ -n $site ]; then
-        echo "$site..."
-        zone_response=$(\
-            curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$site&status=active&page=1&per_page=20&order=status&direction=desc&match=all" \
-            -H "X-Auth-Email: $email" \
-            -H "X-Auth-Key: $key" \
-            -H "Content-Type: application/json")
-
-        #match for the ID of the first result. TODO make this work regardless of the location of id.
-        #currently only works if it is the first key in the first result, eg "result":[{"id":"..."...}]
-        success=$(echo $zone_response | sed -E 's/.*"success":([a-z]{4,5}),.*/\1/g')
-        zone=$(echo $zone_response | sed -E 's/.*"result":\[\{"id":"([a-z0-9]+)".*/\1/g')
-        if [ $success != 'true' ] || [ "$zone" == "$zone_response" ]; then
-            echo "error fetching zone $zone: $zone_response"
-            exit
+# Or, you can pass all variables as options:
+#     -z    zone
+#     -s    site
+#     -e    email
+#     -k    key
+function parse_options {
+    for ((i=2;i<=$#;i++)); 
+    do
+        if [ ${!i} = "-s" ] 
+        then ((i++)) 
+            CLOUDFLARE_SITE=${!i};
+        elif [ ${!i} = "-e" ];
+        then ((i++)) 
+            CLOUDFLARE_EMAIL=${!i};
+        elif [ ${!i} = "-z" ];
+        then ((i++)) 
+            CLOUDFLARE_ZONE=${!i};
+        elif [ ${!i} = "-k" ];
+        then ((i++)) 
+            CLOUDFLARE_API_KEY=${!i};
+        else
+            exit_with_error_and_usage "Invalid option ${!i}"
         fi
+    done;
+}
+
+# The site can be set in a CNAME file containing only the site name as its contents (eg, sitename.com)
+function read_cname {
+    if [ -f CNAME ]; then
+        CLOUDFLARE_SITE=$(cat CNAME)
     fi
-else
-    echo "zone $zone..."
-fi
+}
 
-if [ -z "$zone" ]; then
-    exit_with_error_and_usage "Invalid Cloudflare zone"
-fi
+function set_zone_from_site {
+    require_cloudflare_email
+    require_cloudflare_api_key
+    require_cloudflare_site
+    ZONE_RESPONSE=$(\
+        curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$CLOUDFLARE_SITE&status=active&page=1&per_page=20&order=status&direction=desc&match=all" \
+        -H "X-Auth-Email: $CLOUDFLARE_EMAIL" \
+        -H "X-Auth-Key: $CLOUDFLARE_API_KEY" \
+        -H "Content-Type: application/json")
 
-purge=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/$zone/purge_cache" \
--H "X-Auth-Email: $email" \
--H "X-Auth-Key: $key" \
--H "Content-Type: application/json" \
---data '{"purge_everything":true}')
+    #match for the ID of the first result. TODO make this work regardless of the location of id.
+    #currently only works if it is the first key in the first result, eg "result":[{"id":"..."...}]
+    SUCCESS=$(echo $ZONE_RESPONSE | sed -E 's/.*"success":([a-z]{4,5}),.*/\1/g')
+    CLOUDFLARE_ZONE=$(echo $ZONE_RESPONSE | sed -E 's/.*"result":\[\{"id":"([a-z0-9]+)".*/\1/g')
+    if [ $SUCCESS != 'true' ] || [ "$CLOUDFLARE_ZONE" == "$ZONE_RESPONSE" ]; then
+        echo "Error fetching zone $CLOUDFLARE_ZONE: $ZONE_RESPONSE"
+        exit
+    fi
+}
 
-success=$(echo $purge | sed -E 's/.*"success":([a-z]{4,5}),.*/\1/g')
-if [ $success == 'true' ]; then
-    echo "Successfully purged cache for zone $zone"
-else
-    echo "Failed to purge cache or response not recognized. Response: $purge"
-fi
+function set_cloudflare_zone {
+    if [ -z $CLOUDFLARE_ZONE ]; then
+        require_cloudflare_site
+        set_zone_from_site
+    fi
+}
+
+# **** end setter methods ****
+
+
+# **** methods for requiring variables or exiting with a message ****
+
+#do not require site, because the zone is all we need
+function require_everything {
+    read_cloudfile
+    parse_options
+    set_cloudflare_zone
+    require_cloudflare_email
+    require_cloudflare_api_key
+    require_cloudflare_zone
+}
+
+function require_cloudflare_email {
+    if [ -z $CLOUDFLARE_EMAIL ]; then
+        echo "Cloudflare Email is required"
+        exit
+    fi
+}
+
+function require_cloudflare_api_key {
+    if [ -z $CLOUDFLARE_API_KEY ]; then
+        echo "Cloudflare API Key is required"
+        exit
+    fi
+}
+
+function require_cloudflare_site {
+    if [ -z $CLOUDFLARE_SITE ]; then
+        read_cname
+    fi
+    if [ -z $CLOUDFLARE_SITE ]; then
+        echo "Cloudflare site is required"
+        exit
+    fi
+}
+
+function require_cloudflare_zone {
+    if [ -z $CLOUDFLARE_ZONE ]; then
+        echo "Cloudflare zone is required"
+        exit
+    fi
+}
+
+# **** end require methods ****
+
+function purge_cache {
+    require_everything
+
+    PURGE=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE/purge_cache" \
+    -H "X-Auth-Email: $CLOUDFLARE_EMAIL" \
+    -H "X-Auth-Key: $CLOUDFLARE_API_KEY" \
+    -H "Content-Type: application/json" \
+    --data '{"purge_everything":true}')
+
+    SUCCESS=$(echo $PURGE | sed -E 's/.*"success":([a-z]{4,5}),.*/\1/g')
+    if [ $SUCCESS == 'true' ]; then
+        echo "Successfully purged cache for zone $CLOUDFLARE_ZONE"
+    else
+        echo "Failed to purge cache or response not recognized. Response: $PURGE"
+    fi
+}
+
+case "$1" in
+    validate)
+        require_everything
+        echo "Everything looks good!"
+        ;;
+    config)
+        require_everything
+        echo ""
+        echo "   Cloudflare CLI config:"
+        echo ""
+        echo "   API Key: $CLOUDFLARE_API_KEY"
+        echo "   Email:   $CLOUDFLARE_EMAIL"
+        echo "   Zone:    $CLOUDFLARE_ZONE"
+        if [ -n $CLOUDFLARE_SITE ]; then
+            echo "   Site:    $CLOUDFLARE_SITE"
+        fi
+        echo ""
+        ;;
+    zone)
+        read_cloudfile
+        parse_options
+        set_cloudflare_zone
+        if [ -z $CLOUDFLARE_ZONE ]; then
+            echo "No zone was defined, and could not be found"
+        else
+            echo "Zone: $CLOUDFLARE_ZONE"
+        fi
+        exit;;
+    purge)
+        purge_cache;;
+    help | "-h")
+        exit_with_error_and_usage "";;
+    *)
+        exit_with_error_and_usage "Unknown command: $COMMAND"
+esac
+exit
