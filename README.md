@@ -4,7 +4,12 @@ Command line tools for [Cloudflare](https://cloudflare.com)
 
 ## Installation
 
-To install, place `cloudflare-cli` anywhere in your PATH. Optionally alias it to something easier, like `cf`.
+To install, place `cloudflare-cli` anywhere in your PATH. Optionally alias it to something easier, like `cfcli`.
+Or just run the following command to install it as `cfcli`.
+
+```bash
+sudo wget -qO cfcli https://git.io/cfcli && sudo chmod +x ./cfcli && sudo install ./cfcli /usr/local/bin/cfcli
+```
 
 ## Configuration
 
